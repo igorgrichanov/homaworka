@@ -6,6 +6,12 @@ import (
 	"time"
 )
 
+const (
+	messagesCount   = 100
+	pollingInterval = 100 * time.Millisecond
+	topic           = "default"
+)
+
 /*
 	CREATE TABLE IF NOT EXISTS events(
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -43,7 +49,7 @@ func NewSender(repo OutboxRepository, broker MessageBroker, logger *slog.Logger)
 	}
 }
 
-func (s *Sender) StartProcessEvents(ctx context.Context, pollingInterval time.Duration) error {
+func (s *Sender) StartProcessEvents(ctx context.Context) error {
 	const op = "eventSender.StartProcessEvents"
 	log := s.logger.With(slog.String("op", op))
 	ticker := time.NewTicker(pollingInterval)
@@ -56,7 +62,7 @@ func (s *Sender) StartProcessEvents(ctx context.Context, pollingInterval time.Du
 		case <-ticker.C:
 		}
 
-		events, err := s.repo.GetMessages(ctx, "default", 100)
+		events, err := s.repo.GetMessages(ctx, topic, messagesCount)
 		if err != nil {
 			log.Error(err.Error())
 			continue
@@ -66,7 +72,7 @@ func (s *Sender) StartProcessEvents(ctx context.Context, pollingInterval time.Du
 		}
 
 		// слайс для хранения orderID отправленных заказов для их удаления из outbox
-		sentIDs := make([]int, 0, 100)
+		sentIDs := make([]int, 0)
 		for _, event := range events {
 			err = s.broker.PublishOrderCreated(ctx, event)
 			if err != nil {
