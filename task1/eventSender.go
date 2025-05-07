@@ -1,0 +1,101 @@
+package task1
+
+import (
+	"context"
+	"log/slog"
+	"time"
+)
+
+const (
+	messagesCount   = 100
+	pollingInterval = 100 * time.Millisecond
+	topic           = "default"
+)
+
+/*
+	CREATE TABLE IF NOT EXISTS events(
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	topic TEXT NOT NULL,
+	payload TEXT NOT NULL,
+	created_at TIMESTAMPTZ DEFAULT now(),
+	reserved_to TIMESTAMPTZ DEFAULT NULL
+);
+*/
+
+type OutboxRepository interface {
+	GetMessages(ctx context.Context, topic string, size int) ([]*OrderEvent, error) // читаем батч
+
+	/*
+		DELETE FROM ... WHERE order_id IN (...)
+	*/
+	DeleteSentMessages(ctx context.Context, sentIDs []int) error // чистим батч из outbox
+}
+
+type MessageBroker interface {
+	PublishOrderCreated(ctx context.Context, event *OrderEvent) error
+}
+
+type Sender struct {
+	repo   OutboxRepository
+	broker MessageBroker
+	logger *slog.Logger
+}
+
+func NewSender(repo OutboxRepository, broker MessageBroker, logger *slog.Logger) *Sender {
+	return &Sender{
+		repo:   repo,
+		broker: broker,
+		logger: logger,
+	}
+}
+
+func (s *Sender) StartProcessEvents(ctx context.Context) error {
+	const op = "eventSender.StartProcessEvents"
+	log := s.logger.With(slog.String("op", op))
+	ticker := time.NewTicker(pollingInterval)
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Info("stopping event processing")
+			return ctx.Err()
+		case <-ticker.C:
+		}
+
+		events, err := s.repo.GetMessages(ctx, topic, messagesCount)
+		if err != nil {
+			log.Error(err.Error())
+			continue
+		}
+		if len(events) == 0 {
+			continue
+		}
+
+		// слайс для хранения orderID отправленных заказов для их удаления из outbox
+		sentIDs := make([]int, 0)
+		for _, event := range events {
+			err = s.broker.PublishOrderCreated(ctx, event)
+			if err != nil {
+				log.Error(err.Error())
+				continue
+			}
+			sentIDs = append(sentIDs, event.OrderID)
+		}
+		err = s.repo.DeleteSentMessages(ctx, sentIDs)
+		if err != nil {
+			log.Error(err.Error())
+		}
+	}
+}
+
+type MockBroker struct {
+	logger *slog.Logger
+}
+
+func (mb *MockBroker) PublishOrderCreated(ctx context.Context, event *OrderEvent) error {
+	const op = "eventSender.SendMesage"
+	log := mb.logger.With(slog.String("op", op))
+
+	log.Info("sending message", slog.Any("event", event))
+	return nil
+}
