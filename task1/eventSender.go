@@ -18,7 +18,11 @@ import (
 
 type OutboxRepository interface {
 	GetMessages(ctx context.Context, topic string, size int) ([]*OrderEvent, error) // читаем батч
-	SetMessageSent(ctx context.Context, sentIDs []int) error                        // чистим батч из outbox
+
+	/*
+		DELETE FROM ... WHERE order_id IN (...)
+	*/
+	DeleteSentMessages(ctx context.Context, sentIDs []int) error // чистим батч из outbox
 }
 
 type MessageBroker interface {
@@ -39,10 +43,10 @@ func NewSender(repo OutboxRepository, broker MessageBroker, logger *slog.Logger)
 	}
 }
 
-func (s *Sender) StartProcessEvents(ctx context.Context, handlePeriod time.Duration) error {
+func (s *Sender) StartProcessEvents(ctx context.Context, pollingInterval time.Duration) error {
 	const op = "eventSender.StartProcessEvents"
 	log := s.logger.With(slog.String("op", op))
-	ticker := time.NewTicker(handlePeriod)
+	ticker := time.NewTicker(pollingInterval)
 
 	for {
 		select {
@@ -58,11 +62,11 @@ func (s *Sender) StartProcessEvents(ctx context.Context, handlePeriod time.Durat
 			continue
 		}
 		if len(events) == 0 {
-			log.Debug("no events received")
+			continue
 		}
 
 		// слайс для хранения orderID отправленных заказов для их удаления из outbox
-		sentIDs := make([]int, 100)
+		sentIDs := make([]int, 0, 100)
 		for _, event := range events {
 			err = s.broker.PublishOrderCreated(ctx, event)
 			if err != nil {
@@ -71,7 +75,7 @@ func (s *Sender) StartProcessEvents(ctx context.Context, handlePeriod time.Durat
 			}
 			sentIDs = append(sentIDs, event.OrderID)
 		}
-		err = s.repo.SetMessageSent(ctx, sentIDs)
+		err = s.repo.DeleteSentMessages(ctx, sentIDs)
 		if err != nil {
 			log.Error(err.Error())
 		}
